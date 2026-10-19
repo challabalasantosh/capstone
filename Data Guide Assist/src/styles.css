@@ -267,6 +267,16 @@ kbd { margin-left: 5px; padding: 3px 5px; border: 1px solid rgba(255,255,255,.25
 .result-body > p { animation: rise-in .4s ease-out both; }
 .result-body > p:nth-of-type(2) { animation-delay: .07s; }
 .result-body > p:nth-of-type(3) { animation-delay: .14s; }
+.query-details { padding: 10px 22px 18px; }
+.query-details pre { overflow-x: auto; margin: 10px 0 16px; padding: 12px 14px; border: 1px solid #e9eaf2; border-radius: 8px; color: #41465d; background: #f8f9fc; font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.query-count { margin-bottom: 9px; }
+.query-table-scroll { overflow-x: auto; border: 1px solid #e9eaf2; border-radius: 8px; }
+.query-table-scroll table { width: 100%; border-collapse: collapse; text-align: left; font-size: 11px; }
+.query-table-scroll th, .query-table-scroll td { max-width: 260px; padding: 9px 11px; border-bottom: 1px solid #eff0f5; overflow-wrap: anywhere; }
+.query-table-scroll th { color: #646982; background: #f8f9fc; font-weight: 700; }
+.query-table-scroll td { color: #555a70; }
+.query-table-scroll tr:last-child td { border-bottom: 0; }
+.query-limit-note { margin: 9px 0 0; color: #85899d; font-size: 10px; }
 .edit-prompt { margin: 0 21px 18px; padding: 4px 0; border: 0; color: #6258c8; background: none; font-size: 11px; font-weight: 700; }
 .edit-prompt:hover { color: #4940a9; }
 .edit-prompt span { margin-left: 4px; }

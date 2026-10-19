@@ -8,21 +8,27 @@
     "dev:api": "tsx server/index.ts",
     "dev:web": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "tsx --test test/excel-store.test.ts",
+    "test": "tsx --test test/excel-store.test.ts test/database.test.ts test/guardrails.test.ts test/openai-compatible-llm.test.ts",
     "preview": "vite preview",
     "start": "tsx server/index.ts"
   },
   "dependencies": {
+    "@google/adk": "^2.3.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "dotenv": "^18.0.8",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
+    "openai": "^7.34.0",
+    "pg": "^8.23.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "^6.0.5"
+    "vite": "^6.0.5",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "concurrently": "^9.1.2",

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdir } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import ExcelJS from "exceljs";
 
@@ -13,7 +14,7 @@ export type FeedbackRating = "Thumbs Up" | "Thumbs Down";
 async function loadWorkbook(workbookPath: string): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
   try {
-    await access(workbookPath);
+    await workbook.xlsx.read(createReadStream(workbookPath));
   } catch (error) {
     if (
       typeof error === "object" &&
@@ -25,11 +26,10 @@ async function loadWorkbook(workbookPath: string): Promise<ExcelJS.Workbook> {
     }
     throw error;
   }
-  await workbook.xlsx.readFile(workbookPath);
   return workbook;
 }
 
-function styleHeader(worksheet: ExcelJS.Worksheet) {
+function styleHeader(worksheet: ExcelJS.Worksheet): void {
   worksheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
   worksheet.getRow(1).fill = {
     type: "pattern",

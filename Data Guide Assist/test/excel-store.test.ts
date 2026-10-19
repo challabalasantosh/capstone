@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -101,4 +101,16 @@ test("adds feedback column to an existing prompt workbook", async (t) => {
 
   assert.equal(updatedWorksheet?.getRow(1).getCell(4).value, "Feedback Response");
   assert.equal(updatedWorksheet?.getRow(2).getCell(4).value, "Thumbs Down");
+});
+
+test("does not treat a corrupt workbook as a new workbook", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "data-guide-assist-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const workbookPath = join(directory, "prompts.xlsx");
+  await writeFile(workbookPath, "not an Excel workbook");
+
+  await assert.rejects(
+    appendPromptToWorkbook("Keep existing workbook data safe", workbookPath),
+  );
 });
