@@ -1,5 +1,5 @@
 {
-  "name": "data-guide-assist",
+  "name": "prompt2insight",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -8,12 +8,13 @@
     "dev:api": "tsx server/index.ts",
     "dev:web": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "tsx --test test/excel-store.test.ts test/database.test.ts test/guardrails.test.ts test/openai-compatible-llm.test.ts",
+    "test": "tsx --test test/excel-store.test.ts test/database.test.ts test/guardrails.test.ts test/openai-compatible-llm.test.ts test/suggestions-agent.test.ts test/workflow-agent.test.ts",
     "preview": "vite preview",
     "start": "tsx server/index.ts"
   },
   "dependencies": {
     "@google/adk": "^2.3.0",
+    "@langchain/langgraph": "^1.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "dotenv": "^18.0.8",
     "exceljs": "^4.4.0",

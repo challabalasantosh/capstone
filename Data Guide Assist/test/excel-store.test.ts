@@ -6,6 +6,7 @@ import test from "node:test";
 import ExcelJS from "exceljs";
 import {
   appendPromptToWorkbook,
+  getPromptHistoryForUser,
   saveFeedbackToWorkbook,
 } from "../server/excel-store";
 
@@ -79,6 +80,24 @@ test("stores thumbs-up and thumbs-down feedback in their prompt rows", async (t)
     "Thumbs Down",
   );
   assert.equal(await saveFeedbackToWorkbook("unknown-id", "Thumbs Down", workbookPath), false);
+});
+
+test("keeps saved prompt histories separate by user", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "data-guide-assist-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const workbookPath = join(directory, "prompts.xlsx");
+  await appendPromptToWorkbook("First sales question", workbookPath, "sales");
+  await appendPromptToWorkbook("Catalog question", workbookPath, "catalog");
+  await appendPromptToWorkbook("Second sales question", workbookPath, "sales");
+
+  assert.deepEqual(await getPromptHistoryForUser("sales", workbookPath), [
+    "Second sales question",
+    "First sales question",
+  ]);
+  assert.deepEqual(await getPromptHistoryForUser("catalog", workbookPath), [
+    "Catalog question",
+  ]);
 });
 
 test("adds feedback column to an existing prompt workbook", async (t) => {

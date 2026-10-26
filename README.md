@@ -1,11 +1,11 @@
-# Capstone - Data Guide Assist
+# Prompt2Insight
 
-Data Guide Assist is a web application for asking questions about a PostgreSQL
+Prompt2Insight is a web application for asking questions about a PostgreSQL
 database in plain English. Its React UI sends questions to an Express API, where
 a Google Agent Development Kit (ADK) agent uses Ollama by default, or another
 OpenAI-compatible provider configured by the user, to generate a `SELECT`
 query, run it against PostgreSQL, and summarize the results. Successful prompts
-and feedback are saved to `Data Guide Assist/data/prompts.xlsx`.
+and feedback are saved to PostgreSQL with the signed-in user's account.
 
 ## Install the prerequisites
 
@@ -34,48 +34,98 @@ application's local database config.
 ```sql
 CREATE ROLE data_guide_readonly
     LOGIN PASSWORD '<REPLACE_WITH_A_STRONG_PASSWORD>';
-CREATE DATABASE capstone;
+CREATE DATABASE teamdb;
 ```
 
 Exit `psql`. From the repository root, run `schema.sql` first to create the
 application tables:
 
 ```sh
-psql -h 127.0.0.1 -U postgres -d capstone -f schema.sql
+psql -h 127.0.0.1 -U postgres -d teamdb -f schema.sql
 ```
 
 The schema creates these six tables:
 `product_categories`, `products`, `customers`, `orders`, `order_items`, and
 `invoices`.
 
-To add the optional sample rows, run `sample_data.sql` after the schema:
+In pgAdmin 4, open the `teamdb` database's Query Tool and run
+[`auth_feedback.sql`](./auth_feedback.sql) after creating the application role
+and running `schema.sql`. This creates the login and query-feedback tables,
+adds the four demo accounts, and grants the application role the permissions
+needed for sign-in and feedback.
+
+The demo credentials are:
+
+| User name | Password |
+| --- | --- |
+| `santosh` | `santosh` |
+| `santoshi` | `santoshi` |
+| `suresh` | `suresh` |
+| `guru` | `guru` |
+
+These passwords are intentionally simple for a local demo. Do not use them in
+a deployed or publicly accessible application. The SQL script stores bcrypt
+password hashes using PostgreSQL `pgcrypto`; the server validates credentials
+through a database function and does not retrieve password hashes.
+
+The tables created by the script are:
+
+| Table | Columns |
+| --- | --- |
+| `app_users` | `username` (primary key), `display_name`, `password_hash`, `created_at` |
+| `query_feedback` | `query_id` (UUID primary key), `user_id` (foreign key to `app_users.username`), `input_text`, `generated_query`, `workflow_data` (JSONB), `feedback`, `created_at`, `feedback_updated_at` |
+
+Each successful interaction adds a `query_feedback` row for that user.
+`generated_query` is `NULL` if the agent did not run SQL. `workflow_data`
+stores the query result rows, business analysis, report summary, key points,
+and chart data as JSONB. `feedback` starts as `NULL`; clicking either feedback
+button updates that same row, and users can change their rating later.
+`feedback_updated_at` records the latest update time.
+
+To replace the existing business-table sample rows with a professional,
+fictional dataset, run `sample_data.sql` after the schema:
 
 ```sh
-psql -h 127.0.0.1 -U postgres -d capstone -f sample_data.sql
+psql -h 127.0.0.1 -U postgres -d teamdb -f sample_data.sql
 ```
 
-The sample data file contains `INSERT` queries that populate the tables with
-example records. It uses PostgreSQL `generate_series` to create 100 sample
-categories, products, customers, orders, order items, and invoices. Skip this
-step if you do not need sample records.
+The SQL script clears and repopulates the six business tables with 6
+categories, 18 products, 12 fictional customers, 24 orders, 48 order items,
+and 24 invoices. Invoice subtotals are calculated from order items, with tax
+calculated consistently. Dates are relative to the time the script runs, so
+recent orders and monthly analysis remain useful. Example email addresses use
+`example.com`; contact details are fictional.
 
-Grant the application role read-only access to the database. Connect to
-`capstone` as the PostgreSQL administrator:
+**Important:** this script replaces all existing rows in
+`product_categories`, `products`, `customers`, `orders`, `order_items`, and
+`invoices` and restarts their identity counters. It does not modify app users
+or saved query/feedback history. Review the script and make a database backup
+before running it against any database containing records you need to keep.
+
+Grant the application role access to the database. Connect to
+`teamdb` as the PostgreSQL administrator:
 
 ```sh
-psql -h 127.0.0.1 -U postgres -d capstone
+psql -h 127.0.0.1 -U postgres -d teamdb
 ```
 
 Then run:
 
 ```sql
-GRANT CONNECT ON DATABASE capstone TO data_guide_readonly;
+GRANT CONNECT ON DATABASE teamdb TO data_guide_readonly;
 GRANT USAGE ON SCHEMA public TO data_guide_readonly;
 GRANT SELECT ON TABLE
     product_categories, products, customers, orders, order_items, invoices
     TO data_guide_readonly;
-ALTER ROLE data_guide_readonly SET default_transaction_read_only = on;
 ```
+
+The agent's generated SQL still runs in explicit PostgreSQL read-only
+transactions. The application role additionally gets narrowly scoped
+permissions on `query_feedback` to insert query history, read it for
+suggestions, and update feedback. The `auth_feedback.sql` script resets the
+role's `default_transaction_read_only` setting if you previously enabled it;
+the API itself enforces read-only agent queries and the role cannot write to
+the business tables.
 
 ## Configure and run the application
 
@@ -93,16 +143,16 @@ Copy-Item config/database.example.json config/database.json
 ```
 
 Set the password in `config/database.json` to the same value used when creating
-the `data_guide_readonly` role. The connection config should use database
-`capstone` and user `data_guide_readonly`; the example file already provides
-the default host (`127.0.0.1`), port (`5432`), database, and user. The local
+the `data_guide_readonly` PostgreSQL role. The connection config should use database
+`teamdb` and user `data_guide_readonly`; the example file provides the default
+host (`127.0.0.1`), port (`5432`), database, and user. The local
 `config/database.json` file is ignored by Git; do not commit a real password.
 
 ```json
 {
   "host": "127.0.0.1",
   "port": 5432,
-  "database": "capstone",
+  "database": "teamdb",
   "user": "data_guide_readonly",
   "password": "<REPLACE_WITH_THE_ROLE_PASSWORD>",
   "ssl": false
@@ -175,6 +225,45 @@ generated explanation is factually correct.
 The supported tables and columns are listed in
 `Data Guide Assist/server/agent.ts`. Update those instructions if the schema
 changes.
+
+## Sign-in and prompt suggestions
+
+Sign in with one of the four demo accounts listed above. The app validates
+credentials through the parameterized `authenticate_app_user` database
+function and sets an HTTP-only session cookie. The server uses the signed-in
+account for query logging and feedback ownership rather than trusting a user ID
+sent by the browser. Sessions are held in server memory for up to eight hours
+and are cleared when the server restarts. Prompt suggestions combine the
+signed-in user's recent `query_feedback.input_text` history with sample
+questions.
+
+Each successful request adds a `query_feedback` row. The feedback controls
+update the row selected by `query_id`, scoped to the signed-in user, so another
+user cannot change that interaction's rating.
+
+## Multi-agent analysis workflow
+
+The prompt workflow uses Google ADK for three specialist agents and LangGraph
+for orchestration, without A2A:
+
+1. The **Data Query Agent** creates and executes one approved read-only query
+   through the existing database tool and SQL guardrails.
+2. The **Business Analysis Agent** interprets the structured query rows and
+   answers the user's question using those rows as evidence.
+3. The **Report Agent** creates a concise summary, key points, and an optional
+   bar-chart specification. The server validates chart columns and derives
+   plotted values directly from the result rows rather than trusting values
+   produced by the agent.
+
+LangGraph carries the workflow state between agents. The completed result is
+persisted in `query_feedback.workflow_data` for later review. If you ran
+`auth_feedback.sql` before adding this workflow, run it again in pgAdmin; it
+adds the `workflow_data` column with an idempotent migration.
+
+The result card's **How the agents worked** panel shows each agent's task,
+whether it ran, its user-facing output, and the query execution details
+(columns, row count, and truncation status). This is an operational trace of
+agent outputs and handoffs, not private chain-of-thought or internal prompts.
 
 ## Tests and production build
 

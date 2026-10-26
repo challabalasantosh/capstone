@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import express, {
@@ -9,21 +10,27 @@ import express, {
   type Response,
 } from "express";
 import { answerPrompt } from "./agent";
-import { closeDatabasePool } from "./database";
 import {
-  appendPromptToWorkbook,
-  saveFeedbackToWorkbook,
-} from "./excel-store";
+  authenticateUser,
+  closeDatabasePool,
+  getQueryHistoryForUser,
+  saveQueryInteraction,
+  updateQueryFeedback,
+  type AuthenticatedUser,
+} from "./database";
+import { findDemoUser } from "./demo-users";
 import { validatePrompt } from "./guardrails";
+import { suggestPrompts } from "./suggestions-agent";
 
 const HOST = "127.0.0.1";
 const DEFAULT_PORT = 3001;
 const JSON_BODY_LIMIT = "20kb";
+const SESSION_COOKIE = "data_guide_session";
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const workbookPath = resolve(projectRoot, "data", "prompts.xlsx");
 const distPath = resolve(projectRoot, "dist");
 const app = express();
-let workbookWriteQueue: Promise<void> = Promise.resolve();
+const sessions = new Map<string, { user: AuthenticatedUser; expiresAt: number }>();
 
 class HttpError extends Error {
   constructor(
@@ -51,13 +58,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function enqueueWorkbookWrite<T>(write: () => Promise<T>): Promise<T> {
-  const operation = workbookWriteQueue.then(write);
-  workbookWriteQueue = operation.then(
-    () => undefined,
-    () => undefined,
-  );
-  return operation;
+function readSession(request: Request): {
+  user: AuthenticatedUser;
+  sessionId: string;
+} | undefined {
+  const sessionCookie = request.headers.cookie
+    ?.split(";")
+    .map((cookie) => cookie.trim())
+    .find((cookie) => cookie.startsWith(`${SESSION_COOKIE}=`));
+  const sessionId = sessionCookie?.slice(SESSION_COOKIE.length + 1);
+  if (!sessionId) {
+    return undefined;
+  }
+  const session = sessions.get(sessionId);
+  if (!session || session.expiresAt <= Date.now()) {
+    sessions.delete(sessionId);
+    return undefined;
+  }
+  return { user: session.user, sessionId };
+}
+
+function requireUser(request: Request): AuthenticatedUser {
+  const session = readSession(request);
+  if (!session) {
+    throw new HttpError(401, "Sign in to continue.");
+  }
+  return session.user;
 }
 
 function isBodyParserError(
@@ -69,14 +95,96 @@ function isBodyParserError(
 
 app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
+app.get("/api/auth/me", (request, response) => {
+  response.json({ user: readSession(request)?.user ?? null });
+});
+
+app.post(
+  "/api/auth/login",
+  asyncHandler(async (request, response) => {
+    const body = isRecord(request.body) ? request.body : undefined;
+    const username = body?.username;
+    const password = body?.password;
+    if (
+      typeof username !== "string" ||
+      !username.trim() ||
+      username.length > 100 ||
+      typeof password !== "string" ||
+      !password ||
+      password.length > 200
+    ) {
+      throw new HttpError(400, "Enter a valid username and password.");
+    }
+    const user = await authenticateUser(username.trim(), password);
+    if (!user) {
+      throw new HttpError(401, "The username or password is incorrect.");
+    }
+
+    const sessionId = randomBytes(32).toString("hex");
+    sessions.set(sessionId, { user, expiresAt: Date.now() + SESSION_TTL_MS });
+    response.cookie(SESSION_COOKIE, sessionId, {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: false,
+      path: "/",
+      maxAge: SESSION_TTL_MS,
+    });
+    response.json({ user });
+  }),
+);
+
+app.post("/api/auth/logout", (request, response) => {
+  const session = readSession(request);
+  if (session) {
+    sessions.delete(session.sessionId);
+  }
+  response.clearCookie(SESSION_COOKIE, {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: false,
+    path: "/",
+  });
+  response.json({ loggedOut: true });
+});
+
+app.get(
+  "/api/suggestions",
+  asyncHandler(async (request, response) => {
+    const user = requireUser(request);
+    const prompt = request.query.prompt;
+    if (
+      typeof prompt !== "string" ||
+      prompt.length > 500 ||
+      /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(prompt)
+    ) {
+      throw new HttpError(
+        400,
+        "Suggestions require a signed-in user and a prompt of at most 500 characters.",
+      );
+    }
+
+    const demoUser = findDemoUser(user.id);
+    if (!demoUser) {
+      throw new HttpError(401, "The signed-in user is not available.");
+    }
+    const savedHistory = await getQueryHistoryForUser(user.id);
+    const suggestions = await suggestPrompts(prompt, [
+      ...savedHistory,
+      ...demoUser.samplePrompts,
+    ]);
+    response.json({ suggestions });
+  }),
+);
+
 app.post(
   "/api/prompts",
   asyncHandler(async (request, response) => {
+    const user = requireUser(request);
+    const body = isRecord(request.body) ? request.body : undefined;
+
     let prompt: string;
     try {
-      prompt = validatePrompt(
-        isRecord(request.body) ? request.body.prompt : undefined,
-      );
+      prompt = validatePrompt(body?.prompt);
     } catch (error) {
       throw new HttpError(
         400,
@@ -96,59 +204,69 @@ app.post(
       );
     }
 
-    let savedPrompt: Awaited<ReturnType<typeof appendPromptToWorkbook>>;
+    let interaction: Awaited<ReturnType<typeof saveQueryInteraction>>;
     try {
-      savedPrompt = await enqueueWorkbookWrite(() =>
-        appendPromptToWorkbook(prompt, workbookPath),
+      interaction = await saveQueryInteraction(
+        user.id,
+        prompt,
+        agentAnswer.query?.sql ?? null,
+        {
+          query: agentAnswer.query,
+          analysis: agentAnswer.analysis,
+          trace: agentAnswer.workflowTrace,
+          report: agentAnswer.report,
+        },
       );
     } catch (error) {
       throw new HttpError(
         500,
-        "The agent returned a response, but it could not be saved to Excel. Check that data/prompts.xlsx is writable.",
+        "The agent returned a response, but the query history could not be saved to PostgreSQL.",
         { cause: error },
       );
     }
 
-    response.status(201).json({ ...savedPrompt, ...agentAnswer });
+    response.status(201).json({ ...interaction, ...agentAnswer });
   }),
 );
 
-app.post(
+app.put(
   "/api/feedback",
   asyncHandler(async (request, response) => {
+    const user = requireUser(request);
     const body: unknown = request.body;
-    const promptId = isRecord(body) ? body.promptId : undefined;
+    const interactionId = isRecord(body) ? body.interactionId : undefined;
     const rating = isRecord(body) ? body.rating : undefined;
     if (
-      typeof promptId !== "string" ||
-      !promptId.trim() ||
-      promptId.length > 100 ||
+      typeof interactionId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(interactionId) ||
       (rating !== "Thumbs Up" && rating !== "Thumbs Down")
     ) {
       throw new HttpError(
         400,
-        "Feedback must include a valid prompt ID and rating.",
+        "Feedback must include a valid query ID and rating.",
       );
     }
 
-    let savedFeedback: boolean;
+    let updated: boolean;
     try {
-      savedFeedback = await enqueueWorkbookWrite(() =>
-        saveFeedbackToWorkbook(promptId.trim(), rating, workbookPath),
+      updated = await updateQueryFeedback(
+        user.id,
+        interactionId,
+        rating,
       );
     } catch (error) {
       throw new HttpError(
         500,
-        "Could not save feedback to Excel. Check that data/prompts.xlsx is writable.",
+        "Could not update query feedback in PostgreSQL.",
         { cause: error },
       );
     }
 
-    if (!savedFeedback) {
-      throw new HttpError(404, "The prompt could not be found in the workbook.");
+    if (!updated) {
+      throw new HttpError(404, "The query could not be found for this user.");
     }
 
-    response.status(201).json(savedFeedback);
+    response.status(200).json({ updated: true });
   }),
 );
 
@@ -210,15 +328,14 @@ function parsePort(value: string | undefined): number {
 
 const port = parsePort(process.env.PORT);
 const server = app.listen(port, HOST, () => {
-  console.log(`Data Guide Assist API listening at http://${HOST}:${port}`);
-  console.log(`Workbook: ${workbookPath}`);
+  console.log(`Prompt2Insight API listening at http://${HOST}:${port}`);
   if (existsSync(distPath)) {
     console.log(`Production UI: http://${HOST}:${port}`);
   }
 });
 
 server.on("error", (error) => {
-  console.error("The Data Guide Assist API server failed:", error);
+  console.error("The Prompt2Insight API server failed:", error);
   process.exitCode = 1;
 });
 

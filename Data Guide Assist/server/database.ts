@@ -33,6 +33,54 @@ export interface QueryResult {
   truncated: boolean;
 }
 
+export interface AuthenticatedUser {
+  id: string;
+  username: string;
+  name: string;
+}
+
+export interface SavedQueryInteraction {
+  id: string;
+  savedAt: string;
+}
+
+export type QueryFeedback = "Thumbs Up" | "Thumbs Down";
+
+export interface WorkflowData {
+  query: QueryResult | null;
+  analysis: string;
+  trace: {
+    dataQuery: {
+      status: "completed" | "no-query";
+      response: string;
+      sql: string | null;
+      rowCount: number;
+      columns: string[];
+      truncated: boolean;
+    };
+    businessAnalysis: {
+      status: "completed" | "skipped";
+      response: string;
+    };
+    report: {
+      status: "completed" | "skipped";
+      summary: string;
+      keyPoints: string[];
+      chartCreated: boolean;
+    };
+  };
+  report: {
+    summary: string;
+    keyPoints: string[];
+    chart: {
+      title: string;
+      xKey: string;
+      yKey: string;
+      points: { label: string; value: number }[];
+    } | null;
+  };
+}
+
 export function limitQueryRows<T>(rows: T[], maxRows: number): {
   rows: T[];
   rowCount: number;
@@ -264,6 +312,79 @@ async function getPool(): Promise<pg.Pool> {
     poolConfigKey = configKey;
   }
   return pool;
+}
+
+export async function authenticateUser(
+  username: string,
+  password: string,
+): Promise<AuthenticatedUser | null> {
+  const connectionPool = await getPool();
+  const result = await connectionPool.query<{
+    username: string;
+    display_name: string;
+  }>(
+    `SELECT username, display_name
+     FROM public.authenticate_app_user($1, $2)`,
+    [username, password],
+  );
+  const user = result.rows[0];
+  return user
+    ? { id: user.username, username: user.username, name: user.display_name }
+    : null;
+}
+
+export async function getQueryHistoryForUser(
+  userId: string,
+  maxRows = 100,
+): Promise<string[]> {
+  const connectionPool = await getPool();
+  const result = await connectionPool.query<{ input_text: string }>(
+    `SELECT input_text
+     FROM query_feedback
+     WHERE user_id = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [userId, maxRows],
+  );
+  return result.rows.map(({ input_text }) => input_text);
+}
+
+export async function saveQueryInteraction(
+  userId: string,
+  inputText: string,
+  generatedQuery: string | null,
+  workflowData: WorkflowData,
+): Promise<SavedQueryInteraction> {
+  const connectionPool = await getPool();
+  const result = await connectionPool.query<{ id: string; created_at: Date }>(
+    `INSERT INTO query_feedback (user_id, input_text, generated_query, workflow_data)
+     VALUES ($1, $2, $3, $4)
+     RETURNING query_id AS id, created_at`,
+    [userId, inputText, generatedQuery, JSON.stringify(workflowData)],
+  );
+  const interaction = result.rows[0];
+  if (!interaction) {
+    throw new Error("PostgreSQL did not return the saved query interaction.");
+  }
+  return {
+    id: interaction.id,
+    savedAt: interaction.created_at.toISOString(),
+  };
+}
+
+export async function updateQueryFeedback(
+  userId: string,
+  interactionId: string,
+  feedback: QueryFeedback,
+): Promise<boolean> {
+  const connectionPool = await getPool();
+  const result = await connectionPool.query(
+    `UPDATE query_feedback
+     SET feedback = $3, feedback_updated_at = CURRENT_TIMESTAMP
+     WHERE query_id = $1 AND user_id = $2`,
+    [interactionId, userId, feedback],
+  );
+  return result.rowCount === 1;
 }
 
 function tokenizeQuery(query: string): SqlToken[] {

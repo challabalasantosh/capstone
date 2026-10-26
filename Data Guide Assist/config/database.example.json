@@ -1,7 +1,7 @@
 {
   "host": "127.0.0.1",
   "port": 5432,
-  "database": "capstone",
+  "database": "teamdb",
   "user": "data_guide_readonly",
   "password": "",
   "ssl": false

@@ -61,9 +61,22 @@ function ensureFeedbackColumn(worksheet: ExcelJS.Worksheet): number {
   return feedbackColumn;
 }
 
+function ensureUserIdColumn(worksheet: ExcelJS.Worksheet): number {
+  const headerRow = worksheet.getRow(1);
+  let userIdColumn = findHeaderColumn(worksheet, "User ID");
+  if (userIdColumn === undefined) {
+    userIdColumn = headerRow.cellCount + 1;
+    headerRow.getCell(userIdColumn).value = "User ID";
+    worksheet.getColumn(userIdColumn).width = 24;
+    styleHeader(worksheet);
+  }
+  return userIdColumn;
+}
+
 export async function appendPromptToWorkbook(
   prompt: string,
   workbookPath: string,
+  userId?: string,
 ): Promise<SavedPrompt> {
   const workbook = await loadWorkbook(workbookPath);
   let worksheet = workbook.getWorksheet("Prompts");
@@ -79,14 +92,57 @@ export async function appendPromptToWorkbook(
   }
 
   ensureFeedbackColumn(worksheet);
+  const userIdColumn = ensureUserIdColumn(worksheet);
   const savedAt = new Date().toISOString();
   const id = randomUUID();
-  // Column keys are not preserved when ExcelJS reloads an xlsx file.
-  worksheet.addRow([id, savedAt, prompt]);
+  const row = worksheet.addRow([]);
+  row.getCell(1).value = id;
+  row.getCell(2).value = savedAt;
+  row.getCell(3).value = prompt;
+  row.getCell(userIdColumn).value = userId ?? null;
 
   await mkdir(dirname(workbookPath), { recursive: true });
   await workbook.xlsx.writeFile(workbookPath);
   return { id, savedAt };
+}
+
+export async function getPromptHistoryForUser(
+  userId: string,
+  workbookPath: string,
+  maxRows = 100,
+): Promise<string[]> {
+  const workbook = await loadWorkbook(workbookPath);
+  const worksheet = workbook.getWorksheet("Prompts");
+  if (!worksheet) {
+    return [];
+  }
+
+  const promptColumn = findHeaderColumn(worksheet, "Prompt");
+  const userIdColumn = findHeaderColumn(worksheet, "User ID");
+  if (promptColumn === undefined) {
+    throw new Error('The "Prompts" worksheet is missing its "Prompt" column.');
+  }
+  if (userIdColumn === undefined) {
+    return [];
+  }
+
+  const history: { rowNumber: number; prompt: string }[] = [];
+  worksheet.eachRow((row, rowNumber) => {
+    const savedUserId = row.getCell(userIdColumn).value;
+    const prompt = row.getCell(promptColumn).value;
+    if (
+      rowNumber > 1 &&
+      savedUserId === userId &&
+      typeof prompt === "string" &&
+      prompt.trim()
+    ) {
+      history.push({ rowNumber, prompt });
+    }
+  });
+  return history
+    .sort((left, right) => right.rowNumber - left.rowNumber)
+    .slice(0, maxRows)
+    .map(({ prompt }) => prompt);
 }
 
 export async function saveFeedbackToWorkbook(
